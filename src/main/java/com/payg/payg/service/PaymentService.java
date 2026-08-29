@@ -1,7 +1,9 @@
 package com.payg.payg.service;
 
 import com.payg.payg.dto.CreatePaymentRequest;
+import com.payg.payg.dto.GatewayAttempt;
 import com.payg.payg.dto.Payment;
+import com.payg.payg.dto.PaymentDetails;
 import com.payg.payg.entity.GatewayAttemptEntity;
 import com.payg.payg.entity.OrderEntity;
 import com.payg.payg.entity.PaymentEntity;
@@ -102,6 +104,15 @@ public class PaymentService {
         // happens later, off a worker's claim (see PaymentWorker) - this
         // method's job ends at recording the intent durably (N1).
         return toDto(persisted);
+    }
+
+    public PaymentDetails get(String merchantId, UUID paymentId) {
+        PaymentEntity payment = payments.findByIdAndMerchantId(paymentId, merchantId)
+                .orElseThrow(() -> new ApiException(
+                        HttpStatus.NOT_FOUND, "payment_not_found",
+                        "No such payment: " + paymentId));
+
+        return toDetails(payment, attempts.findByPaymentIdOrderByStartedAt(paymentId));
     }
 
     /**
@@ -276,5 +287,32 @@ public class PaymentService {
                 e.getStatus(),
                 e.getCreatedAt(),
                 e.getUpdatedAt());
+    }
+
+    static PaymentDetails toDetails(PaymentEntity payment, java.util.List<GatewayAttemptEntity> attempts) {
+        return new PaymentDetails(
+                payment.getId(),
+                payment.getOrderId(),
+                payment.getMerchantId(),
+                payment.getIdempotencyKey(),
+                payment.getRequestHash(),
+                payment.getCustomerRef(),
+                payment.getStatus(),
+                payment.getCreatedAt(),
+                payment.getUpdatedAt(),
+                attempts.stream()
+                        .map(PaymentService::toAttemptDto)
+                        .toList());
+    }
+
+    private static GatewayAttempt toAttemptDto(GatewayAttemptEntity attempt) {
+        return new GatewayAttempt(
+                attempt.getId(),
+                attempt.getGatewayName(),
+                attempt.getOutcome(),
+                attempt.getGatewayRef(),
+                attempt.getReason(),
+                attempt.getStartedAt(),
+                attempt.getCompletedAt());
     }
 }

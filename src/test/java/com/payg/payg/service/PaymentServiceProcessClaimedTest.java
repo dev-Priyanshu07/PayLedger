@@ -95,6 +95,11 @@ class PaymentServiceProcessClaimedTest {
 
         service.processClaimed(PAYMENT_ID);
 
+        ArgumentCaptor<GatewayAttemptEntity> attemptCaptor = ArgumentCaptor.forClass(GatewayAttemptEntity.class);
+        verify(attempts).save(attemptCaptor.capture());
+        assertThat(attemptCaptor.getValue().getOutcome()).isEqualTo("INDETERMINATE");
+        assertThat(attemptCaptor.getValue().getGatewayRef()).isNotBlank();
+
         verify(payments).transition(eq(PAYMENT_ID), eq("PROCESSING"), eq("UNKNOWN"), any());
     }
 
@@ -107,6 +112,7 @@ class PaymentServiceProcessClaimedTest {
         ArgumentCaptor<GatewayAttemptEntity> attemptCaptor = ArgumentCaptor.forClass(GatewayAttemptEntity.class);
         verify(attempts).save(attemptCaptor.capture());
         assertThat(attemptCaptor.getValue().getOutcome()).isEqualTo("INDETERMINATE");
+        assertThat(attemptCaptor.getValue().getGatewayRef()).isNotBlank();
 
         verify(payments).transition(eq(PAYMENT_ID), eq("PROCESSING"), eq("UNKNOWN"), any());
     }
@@ -133,6 +139,27 @@ class PaymentServiceProcessClaimedTest {
     }
 
     @Test
+    void unknownPaymentCanBeResolvedToFailure() {
+        PaymentEntity unknownPayment = new PaymentEntity(
+                PAYMENT_ID, ORDER_ID, "merchant_a", "idem-key", "hash",
+                "cust_1", "UNKNOWN", OffsetDateTime.now(), OffsetDateTime.now(),
+                "worker-1", OffsetDateTime.now().minusSeconds(1));
+        GatewayAttemptEntity unknownAttempt = new GatewayAttemptEntity(
+                UUID.randomUUID(), PAYMENT_ID, "mock-gateway", "INDETERMINATE",
+                "gw_ref_1", "timed out", OffsetDateTime.now(), OffsetDateTime.now());
+
+        when(payments.findById(PAYMENT_ID)).thenReturn(Optional.of(unknownPayment));
+        when(attempts.findTopByPaymentIdOrderByStartedAtDesc(PAYMENT_ID))
+                .thenReturn(Optional.of(unknownAttempt));
+        when(gateway.status(any(), eq("gw_ref_1")))
+                .thenReturn(GatewayOutcome.definiteFailure("gw_ref_1", "resolved as declined"));
+
+        service.resolveUnknown(PAYMENT_ID);
+
+        verify(payments).transition(eq(PAYMENT_ID), eq("UNKNOWN"), eq("FAILED"), any());
+    }
+
+    @Test
     void stillIndeterminateStatusCheckLeavesPaymentUnknown() {
         PaymentEntity unknownPayment = new PaymentEntity(
                 PAYMENT_ID, ORDER_ID, "merchant_a", "idem-key", "hash",
@@ -149,6 +176,11 @@ class PaymentServiceProcessClaimedTest {
                 .thenReturn(GatewayOutcome.indeterminate("gw_ref_1", "still unknown"));
 
         service.resolveUnknown(PAYMENT_ID);
+
+        ArgumentCaptor<GatewayAttemptEntity> attemptCaptor = ArgumentCaptor.forClass(GatewayAttemptEntity.class);
+        verify(attempts).save(attemptCaptor.capture());
+        assertThat(attemptCaptor.getValue().getOutcome()).isEqualTo("INDETERMINATE");
+        assertThat(attemptCaptor.getValue().getReason()).startsWith("status resolution:");
 
         verify(payments, never()).transition(eq(PAYMENT_ID), eq("UNKNOWN"), any(), any());
     }
