@@ -22,6 +22,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -108,5 +109,47 @@ class PaymentServiceProcessClaimedTest {
         assertThat(attemptCaptor.getValue().getOutcome()).isEqualTo("INDETERMINATE");
 
         verify(payments).transition(eq(PAYMENT_ID), eq("PROCESSING"), eq("UNKNOWN"), any());
+    }
+
+    @Test
+    void unknownPaymentCanBeResolvedToSuccess() {
+        PaymentEntity unknownPayment = new PaymentEntity(
+                PAYMENT_ID, ORDER_ID, "merchant_a", "idem-key", "hash",
+                "cust_1", "UNKNOWN", OffsetDateTime.now(), OffsetDateTime.now(),
+                "worker-1", OffsetDateTime.now().minusSeconds(1));
+        GatewayAttemptEntity unknownAttempt = new GatewayAttemptEntity(
+                UUID.randomUUID(), PAYMENT_ID, "mock-gateway", "INDETERMINATE",
+                "gw_ref_1", "timed out", OffsetDateTime.now(), OffsetDateTime.now());
+
+        when(payments.findById(PAYMENT_ID)).thenReturn(Optional.of(unknownPayment));
+        when(attempts.findTopByPaymentIdOrderByStartedAtDesc(PAYMENT_ID))
+                .thenReturn(Optional.of(unknownAttempt));
+        when(gateway.status(any(), eq("gw_ref_1")))
+                .thenReturn(GatewayOutcome.success("gw_ref_1", "resolved"));
+
+        service.resolveUnknown(PAYMENT_ID);
+
+        verify(payments).transition(eq(PAYMENT_ID), eq("UNKNOWN"), eq("SUCCESS"), any());
+    }
+
+    @Test
+    void stillIndeterminateStatusCheckLeavesPaymentUnknown() {
+        PaymentEntity unknownPayment = new PaymentEntity(
+                PAYMENT_ID, ORDER_ID, "merchant_a", "idem-key", "hash",
+                "cust_1", "UNKNOWN", OffsetDateTime.now(), OffsetDateTime.now(),
+                "worker-1", OffsetDateTime.now().minusSeconds(1));
+        GatewayAttemptEntity unknownAttempt = new GatewayAttemptEntity(
+                UUID.randomUUID(), PAYMENT_ID, "mock-gateway", "INDETERMINATE",
+                "gw_ref_1", "timed out", OffsetDateTime.now(), OffsetDateTime.now());
+
+        when(payments.findById(PAYMENT_ID)).thenReturn(Optional.of(unknownPayment));
+        when(attempts.findTopByPaymentIdOrderByStartedAtDesc(PAYMENT_ID))
+                .thenReturn(Optional.of(unknownAttempt));
+        when(gateway.status(any(), eq("gw_ref_1")))
+                .thenReturn(GatewayOutcome.indeterminate("gw_ref_1", "still unknown"));
+
+        service.resolveUnknown(PAYMENT_ID);
+
+        verify(payments, never()).transition(eq(PAYMENT_ID), eq("UNKNOWN"), any(), any());
     }
 }

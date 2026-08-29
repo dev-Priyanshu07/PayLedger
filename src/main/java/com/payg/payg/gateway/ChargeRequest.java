@@ -13,6 +13,7 @@ public record ChargeRequest(
         UUID paymentId,
         long amountMinor,
         String currency,
-        String customerRef
+        String customerRef,
+        String gatewayRef
 ) {
 }
