@@ -1,0 +1,28 @@
+# Local Postgres for development.
+#
+# Deliberately no schema DDL here. Flyway owns the schema (see
+# application.properties) and applies it when the application boots, so there
+# is exactly one place migrations can come from. An init script here would be a
+# second source of truth and the two would drift.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: payg-postgres
+    environment:
+      POSTGRES_DB: payg
+      POSTGRES_USER: payg
+      POSTGRES_PASSWORD: payg
+    ports:
+      - "5432:5432"
+    volumes:
+      - payg-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Without -d, pg_isready checks the default database and reports ready
+      # before ours exists.
+      test: ["CMD-SHELL", "pg_isready -U payg -d payg"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  payg-pgdata:
