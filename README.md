@@ -30,7 +30,9 @@ attempt history, and worker lease recovery.
 - Gateway attempt recording
 - Safe handling of indeterminate gateway results
 - Lease reaper for payments stuck in `PROCESSING`
-- Mock gateway that always succeeds
+- Resolver for `UNKNOWN` payments using the original gateway reference
+- Payment status query with gateway attempt history
+- Random-outcome mock gateway for local stability testing
 
 ## Project Structure
 
@@ -156,6 +158,17 @@ Replaying the same idempotency key with the same request returns the existing
 payment. Reusing the same idempotency key with a different request returns
 `409 Conflict`.
 
+### Get Payment
+
+```http
+GET /v1/payments/{paymentId}
+X-API-Key: sk_test_merchant_a
+```
+
+Returns the current payment state and all gateway attempts recorded for that
+payment. This is the merchant-visible way to check what happened after the
+asynchronous worker processed the payment.
+
 ## Payment States
 
 ```text
@@ -179,18 +192,23 @@ payg.worker.lease-seconds=30
 payg.worker.poll-interval-ms=500
 payg.worker.batch-size=20
 payg.worker.reap-interval-ms=5000
+payg.worker.resolve-unknown-interval-ms=5000
 ```
 
 The worker claims the oldest `INITIATED` payment using `FOR UPDATE SKIP LOCKED`,
 so multiple workers can process payments without taking the same row.
 
+The unknown resolver scans `UNKNOWN` payments and asks the mock gateway for the
+status of the original gateway reference. It moves the payment to `SUCCESS` or
+`FAILED` only after a definite answer.
+
 ## Current Limitations
 
 - Only INR is accepted.
-- Gateway integration is a mock that always succeeds.
-- There is no public `GET /v1/payments/{id}` endpoint yet.
+- Gateway integration is a random mock, not a real provider.
 - There is no ledger, settlement matching, webhook delivery, or outbox yet.
-- `UNKNOWN` payments are not reconciled automatically yet.
+- `UNKNOWN` payments are retried indefinitely for now; there is no
+  `NEEDS_REVIEW` timeout window yet.
 - API keys are statically configured for local/demo use.
 
 ## Useful Commands
@@ -201,4 +219,3 @@ docker compose up -d
 .\gradlew test
 git status
 ```
-

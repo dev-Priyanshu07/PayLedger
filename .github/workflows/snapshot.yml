@@ -1,0 +1,121 @@
+name: Snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+concurrency:
+  group: snapshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-snapshot:
+    name: Build Snapshot Artifact
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: payg
+          POSTGRES_USER: payg
+          POSTGRES_PASSWORD: payg
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U payg -d payg"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/payg
+      DB_USER: payg
+      DB_PASSWORD: payg
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set Up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Build
+        run: ./gradlew clean build bootJar
+
+      - name: Upload Snapshot Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: payledger-snapshot-jar
+          path: build/libs/*.jar
+
+  codeql:
+    name: CodeQL Snapshot Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+
+      - name: Build
+        run: ./gradlew clean compileJava compileTestJava
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs:
+      - build-snapshot
+      - codeql
+    environment: snapshot
+    if: ${{ vars.SNAPSHOT_DEPLOY_ENABLED == 'true' }}
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: payledger-snapshot-jar
+          path: build/libs
+
+      - name: Deploy To Cloud
+        run: |
+          echo "Add snapshot cloud deployment commands here."
+          echo "Set repository variable SNAPSHOT_DEPLOY_ENABLED=true when ready."
+          echo "Use GitHub environment secrets for provider credentials."

@@ -39,7 +39,15 @@ public record GatewayOutcome(Result result, String gatewayRef, String reason) {
         return new GatewayOutcome(Result.DEFINITE_FAILURE, null, reason);
     }
 
+    public static GatewayOutcome definiteFailure(String gatewayRef, String reason) {
+        return new GatewayOutcome(Result.DEFINITE_FAILURE, gatewayRef, reason);
+    }
+
     public static GatewayOutcome indeterminate(String reason) {
         return new GatewayOutcome(Result.INDETERMINATE, null, reason);
+    }
+
+    public static GatewayOutcome indeterminate(String gatewayRef, String reason) {
+        return new GatewayOutcome(Result.INDETERMINATE, gatewayRef, reason);
     }
 }

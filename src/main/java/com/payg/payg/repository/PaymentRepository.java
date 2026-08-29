@@ -8,12 +8,17 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface PaymentRepository extends JpaRepository<PaymentEntity, UUID> {
 
     Optional<PaymentEntity> findByMerchantIdAndIdempotencyKey(String merchantId, String idempotencyKey);
+
+    Optional<PaymentEntity> findByIdAndMerchantId(UUID id, String merchantId);
+
+    List<PaymentEntity> findTop20ByStatusOrderByUpdatedAt(String status);
 
     /**
      * Moves a payment from one state to another, but only if it is currently in

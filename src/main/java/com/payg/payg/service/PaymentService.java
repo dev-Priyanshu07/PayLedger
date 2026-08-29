@@ -1,7 +1,9 @@
 package com.payg.payg.service;
 
 import com.payg.payg.dto.CreatePaymentRequest;
+import com.payg.payg.dto.GatewayAttempt;
 import com.payg.payg.dto.Payment;
+import com.payg.payg.dto.PaymentDetails;
 import com.payg.payg.entity.GatewayAttemptEntity;
 import com.payg.payg.entity.OrderEntity;
 import com.payg.payg.entity.PaymentEntity;
@@ -104,6 +106,15 @@ public class PaymentService {
         return toDto(persisted);
     }
 
+    public PaymentDetails get(String merchantId, UUID paymentId) {
+        PaymentEntity payment = payments.findByIdAndMerchantId(paymentId, merchantId)
+                .orElseThrow(() -> new ApiException(
+                        HttpStatus.NOT_FOUND, "payment_not_found",
+                        "No such payment: " + paymentId));
+
+        return toDetails(payment, attempts.findByPaymentIdOrderByStartedAt(paymentId));
+    }
+
     /**
      * Takes an already-claimed payment to the gateway and records what
      * happened.
@@ -121,17 +132,19 @@ public class PaymentService {
     public void processClaimed(UUID paymentId) {
         PaymentEntity payment = payments.findById(paymentId).orElseThrow();
         OrderEntity order = orders.findById(payment.getOrderId()).orElseThrow();
+        String gatewayRef = gatewayReference(payment.getId());
 
         OffsetDateTime startedAt = OffsetDateTime.now();
-        GatewayOutcome outcome = call(payment, order);
+        GatewayOutcome outcome = call(payment, order, gatewayRef);
         OffsetDateTime completedAt = OffsetDateTime.now();
 
+        String recordedGatewayRef = outcome.gatewayRef() == null ? gatewayRef : outcome.gatewayRef();
         attempts.save(new GatewayAttemptEntity(
                 UUID.randomUUID(),
                 payment.getId(),
                 gateway.name(),
                 outcome.result().name(),
-                outcome.gatewayRef(),
+                recordedGatewayRef,
                 outcome.reason(),
                 startedAt,
                 completedAt));
@@ -146,7 +159,63 @@ public class PaymentService {
 
         log.info("payment={} gateway={} outcome={} ref={} status={}",
                 payment.getId(), gateway.name(), outcome.result(),
-                outcome.gatewayRef(), resulting);
+                recordedGatewayRef, resulting);
+    }
+
+    /**
+     * Re-checks an {@code UNKNOWN} payment using the same gateway reference as
+     * the original uncertain call.
+     *
+     * <p>A definite gateway answer moves the payment to {@code SUCCESS} or
+     * {@code FAILED}. Another indeterminate answer leaves it {@code UNKNOWN}
+     * for a later resolver tick.
+     */
+    public void resolveUnknown(UUID paymentId) {
+        PaymentEntity payment = payments.findById(paymentId).orElseThrow();
+        if (!UNKNOWN.equals(payment.getStatus())) {
+            return;
+        }
+
+        GatewayAttemptEntity latestAttempt = attempts.findTopByPaymentIdOrderByStartedAtDesc(paymentId)
+                .orElseThrow();
+        String gatewayRef = latestAttempt.getGatewayRef();
+        if (gatewayRef == null || gatewayRef.isBlank()) {
+            log.warn("payment={} is UNKNOWN but has no gateway reference to resolve", paymentId);
+            return;
+        }
+
+        OrderEntity order = orders.findById(payment.getOrderId()).orElseThrow();
+
+        OffsetDateTime startedAt = OffsetDateTime.now();
+        GatewayOutcome outcome = status(payment, order, gatewayRef);
+        OffsetDateTime completedAt = OffsetDateTime.now();
+
+        attempts.save(new GatewayAttemptEntity(
+                UUID.randomUUID(),
+                payment.getId(),
+                gateway.name(),
+                outcome.result().name(),
+                gatewayRef,
+                "status resolution: " + outcome.reason(),
+                startedAt,
+                completedAt));
+
+        if (outcome.result() == GatewayOutcome.Result.INDETERMINATE) {
+            log.info("payment={} gateway={} ref={} remains UNKNOWN",
+                    payment.getId(), gateway.name(), gatewayRef);
+            return;
+        }
+
+        String resulting = switch (outcome.result()) {
+            case SUCCESS -> SUCCESS;
+            case DEFINITE_FAILURE -> FAILED;
+            case INDETERMINATE -> UNKNOWN;
+        };
+
+        payments.transition(payment.getId(), UNKNOWN, resulting, OffsetDateTime.now());
+
+        log.info("payment={} gateway={} ref={} resolved status={}",
+                payment.getId(), gateway.name(), gatewayRef, resulting);
     }
 
     /**
@@ -159,19 +228,40 @@ public class PaymentService {
      * it a failure here would be the single easiest way to double-charge a
      * customer.
      */
-    private GatewayOutcome call(PaymentEntity payment, OrderEntity order) {
+    private GatewayOutcome call(PaymentEntity payment, OrderEntity order, String gatewayRef) {
         try {
             return gateway.charge(new ChargeRequest(
                     payment.getId(),
                     order.getAmountMinor(),
                     order.getCurrency(),
-                    payment.getCustomerRef()));
+                    payment.getCustomerRef(),
+                    gatewayRef));
         } catch (RuntimeException e) {
             log.warn("payment={} gateway={} threw; treating as indeterminate",
                     payment.getId(), gateway.name(), e);
-            return GatewayOutcome.indeterminate(
+            return GatewayOutcome.indeterminate(gatewayRef,
                     gateway.name() + " threw " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
+    }
+
+    private GatewayOutcome status(PaymentEntity payment, OrderEntity order, String gatewayRef) {
+        try {
+            return gateway.status(new ChargeRequest(
+                    payment.getId(),
+                    order.getAmountMinor(),
+                    order.getCurrency(),
+                    payment.getCustomerRef(),
+                    gatewayRef), gatewayRef);
+        } catch (RuntimeException e) {
+            log.warn("payment={} gateway={} status check threw; keeping UNKNOWN",
+                    payment.getId(), gateway.name(), e);
+            return GatewayOutcome.indeterminate(gatewayRef,
+                    gateway.name() + " status threw " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    private static String gatewayReference(UUID paymentId) {
+        return "gw_" + paymentId.toString().replace("-", "");
     }
 
     /** Canonical fingerprint of the request body, for idempotent replay checks. */
@@ -197,5 +287,32 @@ public class PaymentService {
                 e.getStatus(),
                 e.getCreatedAt(),
                 e.getUpdatedAt());
+    }
+
+    static PaymentDetails toDetails(PaymentEntity payment, java.util.List<GatewayAttemptEntity> attempts) {
+        return new PaymentDetails(
+                payment.getId(),
+                payment.getOrderId(),
+                payment.getMerchantId(),
+                payment.getIdempotencyKey(),
+                payment.getRequestHash(),
+                payment.getCustomerRef(),
+                payment.getStatus(),
+                payment.getCreatedAt(),
+                payment.getUpdatedAt(),
+                attempts.stream()
+                        .map(PaymentService::toAttemptDto)
+                        .toList());
+    }
+
+    private static GatewayAttempt toAttemptDto(GatewayAttemptEntity attempt) {
+        return new GatewayAttempt(
+                attempt.getId(),
+                attempt.getGatewayName(),
+                attempt.getOutcome(),
+                attempt.getGatewayRef(),
+                attempt.getReason(),
+                attempt.getStartedAt(),
+                attempt.getCompletedAt());
     }
 }

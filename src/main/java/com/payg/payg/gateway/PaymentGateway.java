@@ -27,4 +27,13 @@ public interface PaymentGateway {
      * {@link GatewayOutcome.Result#INDETERMINATE}, the safe reading.
      */
     GatewayOutcome charge(ChargeRequest request);
+
+    /**
+     * Asks the same gateway what happened to an earlier uncertain charge.
+     *
+     * <p>This must use the original gateway reference. It is deliberately not
+     * a second charge with a new reference, because that could double-charge a
+     * customer whose first request actually reached the gateway.
+     */
+    GatewayOutcome status(ChargeRequest request, String gatewayRef);
 }
